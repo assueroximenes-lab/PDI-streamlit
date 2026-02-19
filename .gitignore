@@ -1,0 +1,5 @@
+.streamlit/secrets.toml
+client_secret_*.json
+banco.db
+.env
+__pycache__/
