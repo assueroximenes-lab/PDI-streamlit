@@ -1,5 +1,19 @@
+# Streamlit secrets
 .streamlit/secrets.toml
+
+# OAuth files
 client_secret_*.json
+
+# Banco de dados
 banco.db
+
+# Ambiente
 .env
+
+# Python
 __pycache__/
+*.pyc
+
+# IDE
+.idea/
+.vscode/

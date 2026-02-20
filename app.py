@@ -14,6 +14,11 @@ CLIENT_ID = st.secrets["GOOGLE_CLIENT_ID"]
 CLIENT_SECRET = st.secrets["GOOGLE_CLIENT_SECRET"]
 REDIRECT_URI = st.secrets["REDIRECT_URI"]
 
+#st.write("CLIENT_ID usado:", CLIENT_ID)
+#st.write("CLIENT_SECRET:", CLIENT_SECRET[:10])
+#st.write("REDIRECT_URI usada:", REDIRECT_URI)
+
+
 AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 REFRESH_TOKEN_URL = "https://oauth2.googleapis.com/token"
