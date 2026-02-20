@@ -8,6 +8,8 @@ from io import BytesIO
 from docx import Document
 from docx.shared import Inches
 from datetime import datetime
+from streamlit_oauth import OAuth2Component
+import jwt
 
 alt.data_transformers.disable_max_rows()
 
@@ -22,6 +24,98 @@ thead tr th { font-size: 11px !important; }
 tbody tr td { font-size: 11px !important; }
 </style>
 """, unsafe_allow_html=True)
+
+
+# ----------------------------
+# CONFIG OAUTH GOOGLE
+# ----------------------------
+
+CLIENT_ID = st.secrets["GOOGLE_CLIENT_ID"]
+CLIENT_SECRET = st.secrets["GOOGLE_CLIENT_SECRET"]
+REDIRECT_URI = "https://SEUAPP.streamlit.app"  # coloque seu domínio aqui
+
+oauth2 = OAuth2Component(
+    CLIENT_ID,
+    CLIENT_SECRET,
+    "https://accounts.google.com/o/oauth2/auth",
+    "https://oauth2.googleapis.com/token",
+)
+
+def verificar_email_google(token):
+    decoded = jwt.decode(token, options={"verify_signature": False})
+    return decoded.get("email")
+
+# =====================================================
+# CONFIG OAUTH GOOGLE
+# =====================================================
+
+from streamlit_oauth import OAuth2Component
+import jwt
+
+CLIENT_ID = st.secrets["GOOGLE_CLIENT_ID"]
+CLIENT_SECRET = st.secrets["GOOGLE_CLIENT_SECRET"]
+REDIRECT_URI = st.secrets["REDIRECT_URI"]
+
+AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+TOKEN_URL = "https://oauth2.googleapis.com/token"
+REFRESH_TOKEN_URL = "https://oauth2.googleapis.com/token"
+REVOKE_TOKEN_URL = "https://oauth2.googleapis.com/revoke"
+
+oauth2 = OAuth2Component(
+    CLIENT_ID,
+    CLIENT_SECRET,
+    AUTHORIZE_URL,
+    TOKEN_URL,
+    REFRESH_TOKEN_URL,
+    REVOKE_TOKEN_URL,
+)
+
+# ---------------------------
+# CONTROLE DE SESSÃO
+# ---------------------------
+
+if "logado" not in st.session_state:
+    st.session_state.logado = False
+    st.session_state.email = None
+
+# ---------------------------
+# LOGIN GOOGLE OBRIGATÓRIO
+# ---------------------------
+
+if not st.session_state.logado:
+
+    st.title("Painel Gerencial de Metas")
+
+    result = oauth2.authorize_button(
+        name="Entrar com Google (UFAPE)",
+        redirect_uri=REDIRECT_URI,
+        scope="openid email profile",
+        key="google_login"
+    )
+
+    if result and "token" in result:
+
+        id_token = result["token"]["id_token"]
+        decoded = jwt.decode(id_token, options={"verify_signature": False})
+        email = decoded.get("email")
+
+        if email and email.endswith("@ufape.edu.br"):
+            st.session_state.logado = True
+            st.session_state.email = email
+            st.rerun()
+        else:
+            st.error("Acesso permitido apenas para e-mails institucionais @ufape.edu.br")
+
+    st.stop()
+
+# MOSTRAR USUÁRIO LOGADO
+st.sidebar.success(f"Logado como: {st.session_state.email}")
+
+if st.sidebar.button("Sair"):
+    st.session_state.clear()
+    st.rerun()
+
+
 
 # --------------------------
 # CONEXÃO
