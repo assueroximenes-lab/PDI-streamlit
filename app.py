@@ -1,11 +1,11 @@
 import streamlit as st
-st.set_page_config(layout="wide")
-
-import sqlite3
+import os
 import pandas as pd
+import psycopg
 from streamlit_oauth import OAuth2Component
 import jwt
 
+st.set_page_config(layout="wide")
 # =====================================================
 # CONFIG OAUTH GOOGLE
 # =====================================================
@@ -13,11 +13,6 @@ import jwt
 CLIENT_ID = st.secrets["GOOGLE_CLIENT_ID"]
 CLIENT_SECRET = st.secrets["GOOGLE_CLIENT_SECRET"]
 REDIRECT_URI = st.secrets["REDIRECT_URI"]
-
-#st.write("CLIENT_ID usado:", CLIENT_ID)
-#st.write("CLIENT_SECRET:", CLIENT_SECRET[:10])
-#st.write("REDIRECT_URI usada:", REDIRECT_URI)
-
 
 AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -33,13 +28,30 @@ oauth2 = OAuth2Component(
     REVOKE_TOKEN_URL,
 )
 
-# ---------------------------
-# BANCO
-# ---------------------------
+# =====================================================
+# CONEXÃO POSTGRESQL
+# =====================================================
 
 def conectar():
-    return sqlite3.connect("banco.db", check_same_thread=False)
+    # Se estiver na Cloud (tem DATABASE_URL)
+    if "DATABASE_URL" in st.secrets:
+        return psycopg.connect(
+            st.secrets["DATABASE_URL"],
+            sslmode="require"
+        )
 
+    # Se estiver local
+    return psycopg.connect(
+        host="localhost",
+        dbname="metas_dev",
+        user="postgres",
+        password="240119",
+        port="5432"
+    )
+
+# =====================================================
+# BUSCAR RESPONSÁVEL
+# =====================================================
 
 def buscar_responsavel_por_email(email):
     conn = conectar()
@@ -48,34 +60,46 @@ def buscar_responsavel_por_email(email):
     cursor.execute("""
         SELECT usuario
         FROM responsaveis
-        WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))
+        WHERE LOWER(TRIM(email)) = LOWER(TRIM(%s))
     """, (email.strip(),))
 
     resultado = cursor.fetchone()
     conn.close()
     return resultado
 
+# =====================================================
+# CARREGAR METAS
+# =====================================================
 
 def carregar_metas(usuario):
     conn = conectar()
 
     query = """
-    SELECT rowid as ID,
-           Meta,
-           `Descrição da Meta` as Descricao,
-           execucao as Status,
-           Ano_Conclusao as Ano
+    SELECT 
+        "Ordem" as "ID",
+        "Meta",
+        "Descrição da Meta" as "Descricao",
+        "execucao" as "Status",
+        "Ano_Conclusao" as "Ano"
     FROM metas
-    WHERE Resp_1 = ?
+    WHERE "Resp_1" = %s
+    ORDER BY "Ordem"
     """
 
     df = pd.read_sql(query, conn, params=(usuario,))
     conn.close()
 
+    if df.empty:
+        return df
+
     df["Status"] = df["Status"].fillna("NÃO INICIADA")
     df["Ano"] = df["Ano"].fillna("")
+
     return df
 
+# =====================================================
+# ATUALIZAR STATUS
+# =====================================================
 
 def atualizar_status(id_meta, status, ano):
     conn = conectar()
@@ -83,17 +107,17 @@ def atualizar_status(id_meta, status, ano):
 
     cursor.execute("""
         UPDATE metas
-        SET execucao=?, Ano_Conclusao=?
-        WHERE rowid=?
+        SET "execucao" = %s,
+            "Ano_Conclusao" = %s
+        WHERE "Ordem" = %s
     """, (status, ano, id_meta))
 
     conn.commit()
     conn.close()
 
-
-# ---------------------------
+# =====================================================
 # CONFIGURAÇÕES
-# ---------------------------
+# =====================================================
 
 status_opcoes = [
     "NÃO INICIADA",
@@ -105,18 +129,18 @@ status_opcoes = [
 
 anos_opcoes = ["2023", "2024", "2025", "2026"]
 
-# ---------------------------
+# =====================================================
 # SESSÃO
-# ---------------------------
+# =====================================================
 
 if "logado" not in st.session_state:
     st.session_state.logado = False
     st.session_state.usuario = None
     st.session_state.email = None
 
-# ---------------------------
-# LOGIN GOOGLE
-# ---------------------------
+# =====================================================
+# LOGIN
+# =====================================================
 
 if not st.session_state.logado:
 
@@ -148,13 +172,11 @@ if not st.session_state.logado:
 
     st.stop()
 
-# ---------------------------
+# =====================================================
 # TELA PRINCIPAL
-# ---------------------------
+# =====================================================
 
 st.title(f"Metas do responsável: {st.session_state.usuario}")
-
-# ✅ MOSTRAR E-MAIL LOGADO
 st.caption(f"Logado como: {st.session_state.email}")
 
 if st.button("Sair"):
@@ -167,9 +189,9 @@ if df.empty:
     st.info("Nenhuma meta encontrada.")
     st.stop()
 
-# ---------------------------
-# RESUMO GERAL
-# ---------------------------
+# =====================================================
+# RESUMO
+# =====================================================
 
 st.subheader("Resumo geral das metas")
 
@@ -177,8 +199,6 @@ total_metas = len(df)
 
 resumo = df["Status"].value_counts().reset_index()
 resumo.columns = ["Status", "Quantidade"]
-
-resumo["Quantidade"] = pd.to_numeric(resumo["Quantidade"])
 resumo["Percentual (%)"] = (resumo["Quantidade"] / total_metas * 100).round(1)
 
 cols = st.columns(len(resumo) + 1)
@@ -193,9 +213,9 @@ for i, row in resumo.iterrows():
 
 st.divider()
 
-# ---------------------------
-# METAS EM ANDAMENTO
-# ---------------------------
+# =====================================================
+# METAS EDITÁVEIS
+# =====================================================
 
 metas_concluidas = df[df["Status"] == "CONCLUÍDA"].copy()
 metas_editaveis = df[df["Status"] != "CONCLUÍDA"].copy()
@@ -206,23 +226,11 @@ alteracoes = []
 
 if not metas_editaveis.empty:
 
-    st.markdown("""
-    <style>
-    .cabecalho-tabela {
-        background-color: #f0f2f6;
-        padding: 8px;
-        border-radius: 4px;
-        border: 1px solid #e0e0e0;
-        font-weight: 600;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
     h1, h2, h3, h4 = st.columns([2,4,2,2])
-    h1.markdown('<div class="cabecalho-tabela">Meta</div>', unsafe_allow_html=True)
-    h2.markdown('<div class="cabecalho-tabela">Descrição</div>', unsafe_allow_html=True)
-    h3.markdown('<div class="cabecalho-tabela">Situação</div>', unsafe_allow_html=True)
-    h4.markdown('<div class="cabecalho-tabela">Ano</div>', unsafe_allow_html=True)
+    h1.write("Meta")
+    h2.write("Descrição")
+    h3.write("Situação")
+    h4.write("Ano")
 
     for _, row in metas_editaveis.iterrows():
 
@@ -257,11 +265,6 @@ else:
     st.info("Não há metas em andamento.")
 
 if st.button("Salvar alterações"):
-
-    for _, status, ano in alteracoes:
-        if status == "CONCLUÍDA" and ano == "":
-            st.warning("Informe o ano para todas as metas concluídas.")
-            st.stop()
 
     for id_meta, status, ano in alteracoes:
         atualizar_status(id_meta, status, ano)

@@ -3,22 +3,53 @@ st.set_page_config(layout="wide")
 
 import sqlite3
 import pandas as pd
+from streamlit_oauth import OAuth2Component
+import jwt
+
+# =====================================================
+# CONFIG OAUTH GOOGLE
+# =====================================================
+
+CLIENT_ID = st.secrets["GOOGLE_CLIENT_ID"]
+CLIENT_SECRET = st.secrets["GOOGLE_CLIENT_SECRET"]
+REDIRECT_URI = st.secrets["REDIRECT_URI"]
+
+#st.write("CLIENT_ID usado:", CLIENT_ID)
+#st.write("CLIENT_SECRET:", CLIENT_SECRET[:10])
+#st.write("REDIRECT_URI usada:", REDIRECT_URI)
+
+
+AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+TOKEN_URL = "https://oauth2.googleapis.com/token"
+REFRESH_TOKEN_URL = "https://oauth2.googleapis.com/token"
+REVOKE_TOKEN_URL = "https://oauth2.googleapis.com/revoke"
+
+oauth2 = OAuth2Component(
+    CLIENT_ID,
+    CLIENT_SECRET,
+    AUTHORIZE_URL,
+    TOKEN_URL,
+    REFRESH_TOKEN_URL,
+    REVOKE_TOKEN_URL,
+)
 
 # ---------------------------
 # BANCO
 # ---------------------------
+
 def conectar():
     return sqlite3.connect("banco.db", check_same_thread=False)
 
 
-def verificar_login(usuario, senha):
+def buscar_responsavel_por_email(email):
     conn = conectar()
     cursor = conn.cursor()
 
-    cursor.execute(
-        "SELECT * FROM responsaveis WHERE usuario=? AND senha=?",
-        (usuario, senha)
-    )
+    cursor.execute("""
+        SELECT usuario
+        FROM responsaveis
+        WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))
+    """, (email.strip(),))
 
     resultado = cursor.fetchone()
     conn.close()
@@ -63,6 +94,7 @@ def atualizar_status(id_meta, status, ano):
 # ---------------------------
 # CONFIGURAÇÕES
 # ---------------------------
+
 status_opcoes = [
     "NÃO INICIADA",
     "INICIADA",
@@ -76,164 +108,172 @@ anos_opcoes = ["2023", "2024", "2025", "2026"]
 # ---------------------------
 # SESSÃO
 # ---------------------------
+
 if "logado" not in st.session_state:
     st.session_state.logado = False
     st.session_state.usuario = None
-
+    st.session_state.email = None
 
 # ---------------------------
-# LOGIN
+# LOGIN GOOGLE
 # ---------------------------
+
 if not st.session_state.logado:
 
     st.title("Sistema de Acompanhamento de Metas")
 
-    usuario = st.text_input("Responsável")
-    senha = st.text_input("Senha", type="password")
+    result = oauth2.authorize_button(
+        name="Entrar com Google",
+        redirect_uri=REDIRECT_URI,
+        scope="openid email profile",
+        key="google_login"
+    )
 
-    if st.button("Entrar"):
-        if verificar_login(usuario, senha):
-            st.session_state.logado = True
-            st.session_state.usuario = usuario
-            st.rerun()
-        else:
-            st.error("Usuário ou senha inválidos")
+    if result and "token" in result:
 
+        id_token = result["token"]["id_token"]
+        decoded = jwt.decode(id_token, options={"verify_signature": False})
+        email = decoded.get("email")
+
+        if email:
+            responsavel = buscar_responsavel_por_email(email)
+
+            if responsavel:
+                st.session_state.logado = True
+                st.session_state.usuario = responsavel[0]
+                st.session_state.email = email
+                st.rerun()
+            else:
+                st.error("E-mail não cadastrado como responsável.")
+
+    st.stop()
 
 # ---------------------------
 # TELA PRINCIPAL
 # ---------------------------
-else:
 
-    st.title(f"Metas do responsável: {st.session_state.usuario}")
+st.title(f"Metas do responsável: {st.session_state.usuario}")
 
-    if st.button("Sair"):
-        st.session_state.logado = False
-        st.session_state.usuario = None
-        st.rerun()
+# ✅ MOSTRAR E-MAIL LOGADO
+st.caption(f"Logado como: {st.session_state.email}")
 
-    df = carregar_metas(st.session_state.usuario)
+if st.button("Sair"):
+    st.session_state.clear()
+    st.rerun()
 
-    if df.empty:
-        st.info("Nenhuma meta encontrada.")
-        st.stop()
+df = carregar_metas(st.session_state.usuario)
 
-    # ---------------------------
-    # RESUMO GERAL (INÍCIO)
-    # ---------------------------
-    st.subheader("Resumo geral das metas")
+if df.empty:
+    st.info("Nenhuma meta encontrada.")
+    st.stop()
 
-    total_metas = len(df)
+# ---------------------------
+# RESUMO GERAL
+# ---------------------------
 
-    # Conta corretamente
-    resumo = df["Status"].value_counts().reset_index()
-    resumo.columns = ["Status", "Quantidade"]
+st.subheader("Resumo geral das metas")
 
-    # Garante que é número
-    resumo["Quantidade"] = pd.to_numeric(resumo["Quantidade"])
+total_metas = len(df)
 
-    # Calcula percentual
-    resumo["Percentual (%)"] = (resumo["Quantidade"] / total_metas * 100).round(1)
+resumo = df["Status"].value_counts().reset_index()
+resumo.columns = ["Status", "Quantidade"]
 
-    cols = st.columns(len(resumo) + 1)
+resumo["Quantidade"] = pd.to_numeric(resumo["Quantidade"])
+resumo["Percentual (%)"] = (resumo["Quantidade"] / total_metas * 100).round(1)
 
-    cols[0].metric("Total de Metas", total_metas)
+cols = st.columns(len(resumo) + 1)
+cols[0].metric("Total de Metas", total_metas)
 
-    for i, row in resumo.iterrows():
-        cols[i + 1].metric(
-            row["Status"],
-            int(row["Quantidade"]),
-            f"{row['Percentual (%)']}%"
+for i, row in resumo.iterrows():
+    cols[i + 1].metric(
+        row["Status"],
+        int(row["Quantidade"]),
+        f"{row['Percentual (%)']}%"
+    )
+
+st.divider()
+
+# ---------------------------
+# METAS EM ANDAMENTO
+# ---------------------------
+
+metas_concluidas = df[df["Status"] == "CONCLUÍDA"].copy()
+metas_editaveis = df[df["Status"] != "CONCLUÍDA"].copy()
+
+st.subheader("Metas em andamento")
+
+alteracoes = []
+
+if not metas_editaveis.empty:
+
+    st.markdown("""
+    <style>
+    .cabecalho-tabela {
+        background-color: #f0f2f6;
+        padding: 8px;
+        border-radius: 4px;
+        border: 1px solid #e0e0e0;
+        font-weight: 600;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    h1, h2, h3, h4 = st.columns([2,4,2,2])
+    h1.markdown('<div class="cabecalho-tabela">Meta</div>', unsafe_allow_html=True)
+    h2.markdown('<div class="cabecalho-tabela">Descrição</div>', unsafe_allow_html=True)
+    h3.markdown('<div class="cabecalho-tabela">Situação</div>', unsafe_allow_html=True)
+    h4.markdown('<div class="cabecalho-tabela">Ano</div>', unsafe_allow_html=True)
+
+    for _, row in metas_editaveis.iterrows():
+
+        c1, c2, c3, c4 = st.columns([2,4,2,2])
+
+        c1.write(row["Meta"])
+        c2.write(row["Descricao"])
+
+        novo_status = c3.selectbox(
+            "",
+            status_opcoes,
+            index=status_opcoes.index(row["Status"]) if row["Status"] in status_opcoes else 0,
+            key=f"status_{row['ID']}",
+            label_visibility="collapsed"
         )
 
-    st.divider()
+        ano_escolhido = ""
 
-    # ---------------------------
-    # METAS EM ANDAMENTO
-    # ---------------------------
-    metas_concluidas = df[df["Status"] == "CONCLUÍDA"].copy()
-    metas_editaveis = df[df["Status"] != "CONCLUÍDA"].copy()
-
-    st.subheader("Metas em andamento")
-
-    alteracoes = []
-
-    if not metas_editaveis.empty:
-
-        st.markdown("""
-        <style>
-        .cabecalho-tabela {
-            background-color: #f0f2f6;
-            padding: 8px;
-            border-radius: 4px;
-            border: 1px solid #e0e0e0;
-            font-weight: 600;
-        }
-        </style>
-        """, unsafe_allow_html=True)
-
-        h1, h2, h3, h4 = st.columns([2,4,2,2])
-        h1.markdown('<div class="cabecalho-tabela">Meta</div>', unsafe_allow_html=True)
-        h2.markdown('<div class="cabecalho-tabela">Descrição</div>', unsafe_allow_html=True)
-        h3.markdown('<div class="cabecalho-tabela">Situação</div>', unsafe_allow_html=True)
-        h4.markdown('<div class="cabecalho-tabela">Ano</div>', unsafe_allow_html=True)
-
-        for _, row in metas_editaveis.iterrows():
-
-            c1, c2, c3, c4 = st.columns([2,4,2,2])
-
-            c1.write(row["Meta"])
-            c2.write(row["Descricao"])
-
-            novo_status = c3.selectbox(
+        if novo_status == "CONCLUÍDA":
+            ano_escolhido = c4.selectbox(
                 "",
-                status_opcoes,
-                index=status_opcoes.index(row["Status"]) if row["Status"] in status_opcoes else 0,
-                key=f"status_{row['ID']}",
+                anos_opcoes,
+                key=f"ano_{row['ID']}",
                 label_visibility="collapsed"
             )
+        else:
+            c4.write("-")
 
-            ano_escolhido = ""
+        alteracoes.append((row["ID"], novo_status, ano_escolhido))
 
-            if novo_status == "CONCLUÍDA":
-                ano_escolhido = c4.selectbox(
-                    "",
-                    anos_opcoes,
-                    key=f"ano_{row['ID']}",
-                    label_visibility="collapsed"
-                )
-            else:
-                c4.write("-")
+else:
+    st.info("Não há metas em andamento.")
 
-            alteracoes.append((row["ID"], novo_status, ano_escolhido))
+if st.button("Salvar alterações"):
 
-    else:
-        st.info("Não há metas em andamento.")
+    for _, status, ano in alteracoes:
+        if status == "CONCLUÍDA" and ano == "":
+            st.warning("Informe o ano para todas as metas concluídas.")
+            st.stop()
 
-    # ---------------------------
-    # BOTÃO SALVAR
-    # ---------------------------
-    if st.button("Salvar alterações"):
+    for id_meta, status, ano in alteracoes:
+        atualizar_status(id_meta, status, ano)
 
-        for _, status, ano in alteracoes:
-            if status == "CONCLUÍDA" and ano == "":
-                st.warning("Informe o ano para todas as metas concluídas.")
-                st.stop()
+    st.success("Alterações salvas com sucesso!")
+    st.rerun()
 
-        for id_meta, status, ano in alteracoes:
-            atualizar_status(id_meta, status, ano)
+if not metas_concluidas.empty:
+    st.subheader("Metas concluídas")
 
-        st.success("Alterações salvas com sucesso!")
-        st.rerun()
-
-    # ---------------------------
-    # METAS CONCLUÍDAS
-    # ---------------------------
-    if not metas_concluidas.empty:
-        st.subheader("Metas concluídas")
-
-        st.dataframe(
-            metas_concluidas.drop(columns=["ID"]),
-            use_container_width=True,
-            hide_index=True
-        )
+    st.dataframe(
+        metas_concluidas.drop(columns=["ID"]),
+        use_container_width=True,
+        hide_index=True
+    )

@@ -7,6 +7,9 @@ import altair as alt
 from io import BytesIO
 from docx import Document
 from docx.shared import Inches
+from datetime import datetime
+from streamlit_oauth import OAuth2Component
+import jwt
 
 alt.data_transformers.disable_max_rows()
 
@@ -22,6 +25,98 @@ tbody tr td { font-size: 11px !important; }
 </style>
 """, unsafe_allow_html=True)
 
+
+# ----------------------------
+# CONFIG OAUTH GOOGLE
+# ----------------------------
+
+CLIENT_ID = st.secrets["GOOGLE_CLIENT_ID"]
+CLIENT_SECRET = st.secrets["GOOGLE_CLIENT_SECRET"]
+REDIRECT_URI = "https://SEUAPP.streamlit.app"  # coloque seu domínio aqui
+
+oauth2 = OAuth2Component(
+    CLIENT_ID,
+    CLIENT_SECRET,
+    "https://accounts.google.com/o/oauth2/auth",
+    "https://oauth2.googleapis.com/token",
+)
+
+def verificar_email_google(token):
+    decoded = jwt.decode(token, options={"verify_signature": False})
+    return decoded.get("email")
+
+# =====================================================
+# CONFIG OAUTH GOOGLE
+# =====================================================
+
+from streamlit_oauth import OAuth2Component
+import jwt
+
+CLIENT_ID = st.secrets["GOOGLE_CLIENT_ID"]
+CLIENT_SECRET = st.secrets["GOOGLE_CLIENT_SECRET"]
+REDIRECT_URI = st.secrets["REDIRECT_URI"]
+
+AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+TOKEN_URL = "https://oauth2.googleapis.com/token"
+REFRESH_TOKEN_URL = "https://oauth2.googleapis.com/token"
+REVOKE_TOKEN_URL = "https://oauth2.googleapis.com/revoke"
+
+oauth2 = OAuth2Component(
+    CLIENT_ID,
+    CLIENT_SECRET,
+    AUTHORIZE_URL,
+    TOKEN_URL,
+    REFRESH_TOKEN_URL,
+    REVOKE_TOKEN_URL,
+)
+
+# ---------------------------
+# CONTROLE DE SESSÃO
+# ---------------------------
+
+if "logado" not in st.session_state:
+    st.session_state.logado = False
+    st.session_state.email = None
+
+# ---------------------------
+# LOGIN GOOGLE OBRIGATÓRIO
+# ---------------------------
+
+if not st.session_state.logado:
+
+    st.title("Painel Gerencial de Metas")
+
+    result = oauth2.authorize_button(
+        name="Entrar com Google (UFAPE)",
+        redirect_uri=REDIRECT_URI,
+        scope="openid email profile",
+        key="google_login"
+    )
+
+    if result and "token" in result:
+
+        id_token = result["token"]["id_token"]
+        decoded = jwt.decode(id_token, options={"verify_signature": False})
+        email = decoded.get("email")
+
+        if email and email.endswith("@ufape.edu.br"):
+            st.session_state.logado = True
+            st.session_state.email = email
+            st.rerun()
+        else:
+            st.error("Acesso permitido apenas para e-mails institucionais @ufape.edu.br")
+
+    st.stop()
+
+# MOSTRAR USUÁRIO LOGADO
+st.sidebar.success(f"Logado como: {st.session_state.email}")
+
+if st.sidebar.button("Sair"):
+    st.session_state.clear()
+    st.rerun()
+
+
+
 # --------------------------
 # CONEXÃO
 # --------------------------
@@ -34,6 +129,89 @@ def carregar_dados():
     df = pd.read_sql("SELECT * FROM metas", conn)
     conn.close()
     return df
+
+
+# ----------------------------
+# Função segura para converter inteiro
+# ----------------------------
+def inteiro_seguro(valor):
+    try:
+        if valor is None:
+            return None
+        valor = str(valor).strip()
+        if valor == "":
+            return None
+        return int(float(valor))
+    except:
+        return None
+
+
+# ----------------------------
+# Função de classificação
+# ----------------------------
+def classificar_execucao2(row):
+
+    hoje = datetime.now().year
+
+    execucao = row["execucao"]
+    inicio = inteiro_seguro(row["Inicio"])
+    fim = inteiro_seguro(row["Fim"])
+    ano_conclusao = inteiro_seguro(row["Ano_Conclusao"])
+
+    if execucao == "NÃO INICIADA" and inicio is not None and hoje >= inicio:
+        return "EXECUÇÃO PENDENTE"
+
+    if execucao != "CONCLUÍDA" and fim is not None and hoje > fim:
+        return "ATRASADA"
+
+    if execucao == "NÃO INICIADA" and inicio is not None and hoje < inicio:
+        return "A EXECUTAR"
+
+    if execucao in ["INICIADA", "EM ANDAMENTO", "AVANÇADA"]:
+        if inicio is not None and fim is not None and inicio <= hoje <= fim:
+            return "EM EXECUÇÃO"
+
+    if execucao in ["INICIADA", "EM ANDAMENTO", "AVANÇADA"]:
+        if inicio is not None and hoje < inicio:
+            return "EXECUÇÃO ANTECIPADA"
+
+    if execucao == "CONCLUÍDA" and ano_conclusao is not None:
+        if inicio is not None and fim is not None and inicio <= ano_conclusao <= fim:
+            return "CUMPRIDA NO PRAZO"
+
+    if execucao == "CONCLUÍDA" and ano_conclusao is not None:
+        if inicio is not None and ano_conclusao < inicio:
+            return "CUMPRIDA ANTECIPADA"
+
+    if execucao == "CONCLUÍDA" and ano_conclusao is not None:
+        if fim is not None and ano_conclusao > fim:
+            return "CUMPRIDA COM ATRASO"
+
+    return "NÃO INICIADA"
+
+def atualizar_execucao2():
+    conn = conectar()
+    df_temp = pd.read_sql("SELECT rowid,* FROM metas", conn)
+    cursor = conn.cursor()
+
+    cursor.execute("PRAGMA table_info(metas)")
+    colunas = [c[1] for c in cursor.fetchall()]
+
+    if "execucao2" not in colunas:
+        cursor.execute("ALTER TABLE metas ADD COLUMN execucao2 TEXT")
+        conn.commit()
+
+    df_temp["execucao2"] = df_temp.apply(classificar_execucao2, axis=1)
+
+    for _, row in df_temp.iterrows():
+        cursor.execute(
+            "UPDATE metas SET execucao2=? WHERE rowid=?",
+            (row["execucao2"], row["rowid"])
+        )
+
+    conn.commit()
+    conn.close()
+
 
 # --------------------------
 # GERAR EXCEL
@@ -208,8 +386,9 @@ def gerar_relatorio_word(df):
 # --------------------------
 # CARREGAR DADOS
 # --------------------------
-
+atualizar_execucao2()
 df_original = carregar_dados()
+
 
 if df_original.empty:
     st.warning("Nenhuma meta encontrada no banco.")
@@ -233,6 +412,31 @@ paleta = {
     "AVANÇADA": "#59a14f",
     "CONCLUÍDA": "#2ca02c"
 }
+
+situacoes_exec2 = [
+    "A EXECUTAR",
+    "EXECUÇÃO PENDENTE",
+    "EM EXECUÇÃO",
+    "EXECUÇÃO ANTECIPADA",
+    "ATRASADA",
+    "CUMPRIDA NO PRAZO",
+    "CUMPRIDA ANTECIPADA",
+    "CUMPRIDA COM ATRASO",
+    "NÃO INICIADA"
+]
+
+paleta_exec2 = {
+    "A EXECUTAR": "#4e79a7",
+    "EXECUÇÃO PENDENTE": "#f28e2b",
+    "EM EXECUÇÃO": "#59a14f",
+    "EXECUÇÃO ANTECIPADA": "#76b7b2",
+    "ATRASADA": "#e15759",
+    "CUMPRIDA NO PRAZO": "#2ca02c",
+    "CUMPRIDA ANTECIPADA": "#8cd17d",
+    "CUMPRIDA COM ATRASO": "#ff9da7",
+    "NÃO INICIADA": "#9aa0a6"
+}
+
 
 # --------------------------
 # FILTROS
@@ -383,7 +587,12 @@ grafico = (
     alt.Chart(tabela_resp)
     .mark_bar()
     .encode(
-        y=alt.Y("Resp_1:N", sort="-x", title=None),
+        y=alt.Y(
+            "Resp_1:N",
+            sort="-x",
+            title=None,
+            axis=alt.Axis(labelLimit=1000, labelOverlap=False)
+        ),
         x=alt.X("Quantidade:Q", title=None),
         color=alt.Color(
             "execucao:N",
@@ -430,9 +639,9 @@ else:
 
     st.dataframe(tabela_eixo, use_container_width=True)
 
-# --------------------------
+# ---------------------------------------------
 # METAS DETALHADAS GERAIS
-# --------------------------
+# ---------------------------------------------
 
 st.subheader("Metas Detalhadas (Visão Geral)")
 
@@ -440,3 +649,95 @@ colunas_exibir = ["Eixo", "Resp_1", "Meta", "Descrição da Meta", "execucao"]
 colunas_existentes = [c for c in colunas_exibir if c in df.columns]
 
 st.dataframe(df[colunas_existentes], use_container_width=True)
+
+st.divider()
+st.subheader("Situação Temporal por Responsável")
+total_temporal = len(df)
+st.metric("Total de Metas (Temporal)", total_temporal)
+
+if "execucao2" in df.columns:
+
+    total_temporal = len(df)
+
+    dados_exec2 = []
+    for s in situacoes_exec2:
+        qtd = df[df["execucao2"] == s].shape[0]
+        perc = (qtd / total_temporal * 100) if total_temporal else 0
+        dados_exec2.append([s, qtd, round(perc, 1)])
+
+    tabela_indicadores_exec2 = pd.DataFrame(
+        dados_exec2,
+        columns=["Situação", "Quantidade", "Percentual (%)"]
+    )
+
+    # cria colunas dinâmicas (3 por linha para não ficar esmagado)
+    n_colunas = 3
+    for i in range(0, len(tabela_indicadores_exec2), n_colunas):
+        cols = st.columns(n_colunas)
+        for j in range(n_colunas):
+            if i + j < len(tabela_indicadores_exec2):
+                row = tabela_indicadores_exec2.iloc[i + j]
+                cols[j].metric(
+                    label=row["Situação"],
+                    value=row["Quantidade"],
+                    delta=f'{row["Percentual (%)"]}%'
+                )
+
+    st.divider()
+
+
+
+if "execucao2" in df.columns:
+
+    tabela_exec2 = (
+        df.groupby(["Resp_1", "execucao2"])
+        .size()
+        .reset_index(name="Quantidade")
+    )
+
+    altura2 = max(200, 25 * tabela_exec2["Resp_1"].nunique())
+
+    grafico_exec2 = (
+        alt.Chart(tabela_exec2)
+        .mark_bar()
+        .encode(
+            y=alt.Y(
+                "Resp_1:N",
+                sort="-x",
+                title=None,
+                axis=alt.Axis(labelLimit=1000, labelOverlap=False)
+            ),
+            x=alt.X("Quantidade:Q", title=None),
+            color=alt.Color(
+                "execucao2:N",
+                scale=alt.Scale(
+                    domain=situacoes_exec2,
+                    range=[paleta_exec2[s] for s in situacoes_exec2]
+                ),
+                legend=alt.Legend(orient="bottom", columns=3)
+            ),
+            tooltip=["Resp_1", "execucao2", "Quantidade"]
+        )
+        .properties(height=altura2)
+    )
+
+    st.altair_chart(grafico_exec2, use_container_width=True)
+
+else:
+    st.warning("A coluna execucao2 ainda não foi gerada.")
+
+
+
+st.divider()
+
+
+st.divider()
+st.subheader("Situação Temporal por Responsável")
+
+if "execucao2" in df.columns:
+    tabela_exec2 = (
+        df.groupby(["Resp_1", "execucao2"])
+        .size()
+        .reset_index(name="Quantidade")
+    )
+    st.dataframe(tabela_exec2, us

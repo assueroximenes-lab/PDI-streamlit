@@ -1,5 +1,5 @@
 import streamlit as st
-import sqlite3
+import psycopg
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -121,8 +121,24 @@ if st.sidebar.button("Sair"):
 # CONEXÃO
 # --------------------------
 
+import os
+
 def conectar():
-    return sqlite3.connect("banco.db")
+    # Se estiver na Cloud (tem DATABASE_URL)
+    if "DATABASE_URL" in st.secrets:
+        return psycopg.connect(
+            st.secrets["DATABASE_URL"],
+            sslmode="require"
+        )
+
+    # Se estiver local
+    return psycopg.connect(
+        host="localhost",
+        dbname="metas_dev",
+        user="postgres",
+        password="240119",
+        port="5432"
+    )
 
 def carregar_dados():
     conn = conectar()
@@ -191,22 +207,28 @@ def classificar_execucao2(row):
 
 def atualizar_execucao2():
     conn = conectar()
-    df_temp = pd.read_sql("SELECT rowid,* FROM metas", conn)
     cursor = conn.cursor()
 
-    cursor.execute("PRAGMA table_info(metas)")
-    colunas = [c[1] for c in cursor.fetchall()]
+    # verifica se coluna existe
+    cursor.execute("""
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name='metas'
+        AND column_name='execucao2'
+    """)
+    existe = cursor.fetchall()
 
-    if "execucao2" not in colunas:
+    if not existe:
         cursor.execute("ALTER TABLE metas ADD COLUMN execucao2 TEXT")
         conn.commit()
 
+    df_temp = pd.read_sql("SELECT * FROM metas", conn)
     df_temp["execucao2"] = df_temp.apply(classificar_execucao2, axis=1)
 
     for _, row in df_temp.iterrows():
         cursor.execute(
-            "UPDATE metas SET execucao2=? WHERE rowid=?",
-            (row["execucao2"], row["rowid"])
+            'UPDATE metas SET execucao2=%s WHERE "Ordem"=%s',
+            (row["execucao2"], row["Ordem"])
         )
 
     conn.commit()
