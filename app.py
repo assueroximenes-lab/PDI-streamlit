@@ -33,14 +33,9 @@ oauth2 = OAuth2Component(
 # =====================================================
 
 def conectar():
-    # Se estiver na Cloud (tem DATABASE_URL)
     if "DATABASE_URL" in st.secrets:
-        return psycopg.connect(
-            st.secrets["DATABASE_URL"],
-            sslmode="require"
-        )
+        return psycopg.connect(st.secrets["DATABASE_URL"])
 
-    # Se estiver local
     return psycopg.connect(
         host="localhost",
         dbname="metas_dev",
