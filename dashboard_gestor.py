@@ -10,6 +10,8 @@ from docx.shared import Inches
 from datetime import datetime
 from streamlit_oauth import OAuth2Component
 import jwt
+from sqlalchemy import create_engine, text
+
 
 alt.data_transformers.disable_max_rows()
 
@@ -30,27 +32,24 @@ tbody tr td { font-size: 11px !important; }
 # CONFIG OAUTH GOOGLE
 # ----------------------------
 
-CLIENT_ID = st.secrets["GOOGLE_CLIENT_ID"]
-CLIENT_SECRET = st.secrets["GOOGLE_CLIENT_SECRET"]
-REDIRECT_URI = "https://SEUAPP.streamlit.app"  # coloque seu domínio aqui
+#CLIENT_ID = st.secrets["GOOGLE_CLIENT_ID"]
+#CLIENT_SECRET = st.secrets["GOOGLE_CLIENT_SECRET"]
+#REDIRECT_URI = "https://SEUAPP.streamlit.app"  # coloque seu domínio aqui
 
-oauth2 = OAuth2Component(
-    CLIENT_ID,
-    CLIENT_SECRET,
-    "https://accounts.google.com/o/oauth2/auth",
-    "https://oauth2.googleapis.com/token",
-)
+#oauth2 = OAuth2Component(
+#    CLIENT_ID,
+#    CLIENT_SECRET,
+#    "https://accounts.google.com/o/oauth2/auth",
+#    "https://oauth2.googleapis.com/token",
+#)
 
-def verificar_email_google(token):
-    decoded = jwt.decode(token, options={"verify_signature": False})
-    return decoded.get("email")
+
 
 # =====================================================
 # CONFIG OAUTH GOOGLE
 # =====================================================
 
-from streamlit_oauth import OAuth2Component
-import jwt
+
 
 CLIENT_ID = st.secrets["GOOGLE_CLIENT_ID"]
 CLIENT_SECRET = st.secrets["GOOGLE_CLIENT_SECRET"]
@@ -69,6 +68,10 @@ oauth2 = OAuth2Component(
     REFRESH_TOKEN_URL,
     REVOKE_TOKEN_URL,
 )
+
+def verificar_email_google(token):
+    decoded = jwt.decode(token, options={"verify_signature": False})
+    return decoded.get("email")
 
 # ---------------------------
 # CONTROLE DE SESSÃO
@@ -122,30 +125,27 @@ if st.sidebar.button("Sair"):
 # --------------------------
 
 import os
+import streamlit as st
+import pandas as pd
+from sqlalchemy import create_engine
 
-def conectar():
-    # Se estiver na Cloud (tem DATABASE_URL)
+
+@st.cache_resource
+def get_engine():
+
+    # Se estiver na Streamlit Cloud (tem secrets)
     if "DATABASE_URL" in st.secrets:
-        return psycopg.connect(
-            st.secrets["DATABASE_URL"],
-            sslmode="require"
-        )
+        return create_engine(st.secrets["DATABASE_URL"])
 
     # Se estiver local
-    return psycopg.connect(
-        host="localhost",
-        dbname="metas_dev",
-        user="postgres",
-        password="240119",
-        port="5432"
+    return create_engine(
+        "postgresql+psycopg2://postgres:240119@localhost:5432/metas_dev"
     )
 
-def carregar_dados():
-    conn = conectar()
-    df = pd.read_sql("SELECT * FROM metas", conn)
-    conn.close()
-    return df
 
+def carregar_dados():
+    engine = get_engine()
+    return pd.read_sql("SELECT * FROM metas", engine)
 
 # ----------------------------
 # Função segura para converter inteiro
@@ -206,34 +206,29 @@ def classificar_execucao2(row):
     return "NÃO INICIADA"
 
 def atualizar_execucao2():
-    conn = conectar()
-    cursor = conn.cursor()
 
-    # verifica se coluna existe
-    cursor.execute("""
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_name='metas'
-        AND column_name='execucao2'
-    """)
-    existe = cursor.fetchall()
+    engine = get_engine()
 
-    if not existe:
-        cursor.execute("ALTER TABLE metas ADD COLUMN execucao2 TEXT")
-        conn.commit()
+    # 1️⃣ Carrega dados
+    df_temp = pd.read_sql("SELECT * FROM metas", engine)
 
-    df_temp = pd.read_sql("SELECT * FROM metas", conn)
+    # 2️⃣ Recalcula a coluna
     df_temp["execucao2"] = df_temp.apply(classificar_execucao2, axis=1)
 
-    for _, row in df_temp.iterrows():
-        cursor.execute(
-            'UPDATE metas SET execucao2=%s WHERE "Ordem"=%s',
-            (row["execucao2"], row["Ordem"])
-        )
-
-    conn.commit()
-    conn.close()
-
+    # 3️⃣ Atualiza no banco
+    with engine.begin() as conn:  # begin já faz commit automático
+        for _, row in df_temp.iterrows():
+            conn.execute(
+                text("""
+                    UPDATE metas
+                    SET execucao2 = :execucao2
+                    WHERE "Ordem" = :ordem
+                """),
+                {
+                    "execucao2": row["execucao2"],
+                    "ordem": row["Ordem"]
+                }
+            )
 
 # --------------------------
 # GERAR EXCEL
@@ -459,20 +454,81 @@ paleta_exec2 = {
     "NÃO INICIADA": "#9aa0a6"
 }
 
-
-# --------------------------
+# -----------------------------------------------------------------------
 # FILTROS
-# --------------------------
+# -----------------------------------------------------------------------
 
 st.sidebar.title("Filtros")
 
-responsaveis = ["Todos"] + sorted(df_original["Resp_1"].dropna().unique())
-situacoes = ["Todos"] + situacoes_padrao
-eixos = ["Todos"] + sorted(df_original["Eixo"].dropna().unique())
-
+# ==========================
+# RESPONSÁVEL
+# ==========================
+responsaveis = ["Todos"] + sorted(
+    df_original["Resp_1"].dropna().unique()
+)
 responsavel_sel = st.sidebar.selectbox("Responsável", responsaveis)
+
+# ==========================
+# SITUAÇÃO
+# ==========================
+situacoes = ["Todos"] + situacoes_padrao
 situacao_sel = st.sidebar.selectbox("Situação", situacoes)
+
+# ==========================
+# EIXO
+# ==========================
+eixos = ["Todos"] + sorted(
+    df_original["Eixo"].dropna().unique()
+)
 eixo_sel = st.sidebar.selectbox("Eixo", eixos)
+
+# Base intermediária para dependência
+df_temp = df_original.copy()
+
+if eixo_sel != "Todos":
+    df_temp = df_temp[df_temp["Eixo"] == eixo_sel]
+
+# ==========================
+# OBJETIVO ESTRATÉGICO
+# ==========================
+obj_est = ["Todos"] + sorted(
+    df_temp["Objetivo Estratégico"].dropna().unique()
+)
+obj_est_sel = st.sidebar.selectbox("Objetivo Estratégico", obj_est)
+
+if obj_est_sel != "Todos":
+    df_temp = df_temp[df_temp["Objetivo Estratégico"] == obj_est_sel]
+
+# ==========================
+# OBJETIVO ESPECÍFICO
+# ==========================
+obj_esp = ["Todos"] + sorted(
+    df_temp["Objetivo Específico"].dropna().unique()
+)
+obj_esp_sel = st.sidebar.selectbox("Objetivo Específico", obj_esp)
+
+
+# --------------------------
+# APLICAR FILTROS FINAIS
+# --------------------------
+
+df = df_original.copy()
+
+if responsavel_sel != "Todos":
+    df = df[df["Resp_1"] == responsavel_sel]
+
+if situacao_sel != "Todos":
+    df = df[df["execucao"] == situacao_sel]
+
+if eixo_sel != "Todos":
+    df = df[df["Eixo"] == eixo_sel]
+
+if obj_est_sel != "Todos":
+    df = df[df["Objetivo Estratégico"] == obj_est_sel]
+
+if obj_esp_sel != "Todos":
+    df = df[df["Objetivo Específico"] == obj_esp_sel]
+
 
 # --------------------------
 # DOWNLOAD EXCEL
@@ -503,20 +559,7 @@ st.sidebar.download_button(
     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 )
 
-# --------------------------
-# APLICAR FILTROS
-# --------------------------
 
-df = df_original.copy()
-
-if responsavel_sel != "Todos":
-    df = df[df["Resp_1"] == responsavel_sel]
-
-if situacao_sel != "Todos":
-    df = df[df["execucao"] == situacao_sel]
-
-if eixo_sel != "Todos":
-    df = df[df["Eixo"] == eixo_sel]
 
 # --------------------------
 # DASHBOARD
@@ -564,7 +607,7 @@ st.divider()
 colA, colB = st.columns([1,1])
 
 with colA:
-    st.dataframe(tabela_situacao, use_container_width=True)
+    st.dataframe(tabela_situacao, width="stretch")
 
 with colB:
 
@@ -629,7 +672,7 @@ grafico = (
     .properties(height=altura)
 )
 
-st.altair_chart(grafico, use_container_width=True)
+st.altair_chart(grafico, width="stretch")
 
 st.divider()
 
@@ -659,7 +702,7 @@ else:
     tabela_eixo = tabela_eixo[situacoes_padrao]
     tabela_eixo["TOTAL"] = tabela_eixo.sum(axis=1)
 
-    st.dataframe(tabela_eixo, use_container_width=True)
+    st.dataframe(tabela_eixo, width="stretch")
 
 # ---------------------------------------------
 # METAS DETALHADAS GERAIS
@@ -670,7 +713,7 @@ st.subheader("Metas Detalhadas (Visão Geral)")
 colunas_exibir = ["Eixo", "Resp_1", "Meta", "Descrição da Meta", "execucao"]
 colunas_existentes = [c for c in colunas_exibir if c in df.columns]
 
-st.dataframe(df[colunas_existentes], use_container_width=True)
+st.dataframe(df[colunas_existentes],width="stretch")
 
 st.divider()
 st.subheader("Situação Temporal por Responsável")
@@ -743,7 +786,7 @@ if "execucao2" in df.columns:
         .properties(height=altura2)
     )
 
-    st.altair_chart(grafico_exec2, use_container_width=True)
+    st.altair_chart(grafico_exec2,width="stretch")
 
 else:
     st.warning("A coluna execucao2 ainda não foi gerada.")
@@ -762,4 +805,4 @@ if "execucao2" in df.columns:
         .size()
         .reset_index(name="Quantidade")
     )
-    st.dataframe(tabela_exec2, use_container_width=True)
+    st.dataframe(tabela_exec2, width="stretch")

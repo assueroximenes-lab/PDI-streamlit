@@ -1,11 +1,11 @@
 import streamlit as st
-import os
 import pandas as pd
-import psycopg
 from streamlit_oauth import OAuth2Component
 import jwt
+from sqlalchemy import create_engine, text
 
 st.set_page_config(layout="wide")
+
 # =====================================================
 # CONFIG OAUTH GOOGLE
 # =====================================================
@@ -29,19 +29,17 @@ oauth2 = OAuth2Component(
 )
 
 # =====================================================
-# CONEXÃO POSTGRESQL
+# CONEXÃO SQLALCHEMY
 # =====================================================
 
-def conectar():
-    if "DATABASE_URL" in st.secrets:
-        return psycopg.connect(st.secrets["DATABASE_URL"])
+@st.cache_resource
+def get_engine():
 
-    return psycopg.connect(
-        host="localhost",
-        dbname="metas_dev",
-        user="postgres",
-        password="240119",
-        port="5432"
+    if "DATABASE_URL" in st.secrets:
+        return create_engine(st.secrets["DATABASE_URL"])
+
+    return create_engine(
+        "postgresql+psycopg2://postgres:240119@localhost:5432/metas_dev"
     )
 
 # =====================================================
@@ -49,40 +47,43 @@ def conectar():
 # =====================================================
 
 def buscar_responsavel_por_email(email):
-    conn = conectar()
-    cursor = conn.cursor()
 
-    cursor.execute("""
-        SELECT usuario
-        FROM responsaveis
-        WHERE LOWER(TRIM(email)) = LOWER(TRIM(%s))
-    """, (email.strip(),))
+    engine = get_engine()
 
-    resultado = cursor.fetchone()
-    conn.close()
-    return resultado
+    with engine.connect() as conn:
+        resultado = conn.execute(
+            text("""
+                SELECT usuario
+                FROM responsaveis
+                WHERE LOWER(TRIM(email)) = LOWER(TRIM(:email))
+            """),
+            {"email": email.strip()}
+        ).fetchone()
+
+    return resultado[0] if resultado else None
 
 # =====================================================
 # CARREGAR METAS
 # =====================================================
 
 def carregar_metas(usuario):
-    conn = conectar()
 
-    query = """
-    SELECT 
-        "Ordem" as "ID",
-        "Meta",
-        "Descrição da Meta" as "Descricao",
-        "execucao" as "Status",
-        "Ano_Conclusao" as "Ano"
-    FROM metas
-    WHERE "Resp_1" = %s
-    ORDER BY "Ordem"
-    """
+    engine = get_engine()
 
-    df = pd.read_sql(query, conn, params=(usuario,))
-    conn.close()
+    query = text("""
+        SELECT 
+            "Ordem" as "ID",
+            "Meta",
+            "Descrição da Meta" as "Descricao",
+            "execucao" as "Status",
+            "Ano_Conclusao" as "Ano"
+        FROM metas
+        WHERE "Resp_1" = :usuario
+        ORDER BY "Ordem"
+    """)
+
+    with engine.connect() as conn:
+        df = pd.read_sql(query, conn, params={"usuario": usuario})
 
     if df.empty:
         return df
@@ -97,18 +98,23 @@ def carregar_metas(usuario):
 # =====================================================
 
 def atualizar_status(id_meta, status, ano):
-    conn = conectar()
-    cursor = conn.cursor()
 
-    cursor.execute("""
-        UPDATE metas
-        SET "execucao" = %s,
-            "Ano_Conclusao" = %s
-        WHERE "Ordem" = %s
-    """, (status, ano, id_meta))
+    engine = get_engine()
 
-    conn.commit()
-    conn.close()
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                UPDATE metas
+                SET "execucao" = :status,
+                    "Ano_Conclusao" = :ano
+                WHERE "Ordem" = :id_meta
+            """),
+            {
+                "status": status,
+                "ano": ano,
+                "id_meta": id_meta
+            }
+        )
 
 # =====================================================
 # CONFIGURAÇÕES
@@ -159,7 +165,7 @@ if not st.session_state.logado:
 
             if responsavel:
                 st.session_state.logado = True
-                st.session_state.usuario = responsavel[0]
+                st.session_state.usuario = responsavel
                 st.session_state.email = email
                 st.rerun()
             else:
@@ -235,7 +241,7 @@ if not metas_editaveis.empty:
         c2.write(row["Descricao"])
 
         novo_status = c3.selectbox(
-            "",
+            "Status",
             status_opcoes,
             index=status_opcoes.index(row["Status"]) if row["Status"] in status_opcoes else 0,
             key=f"status_{row['ID']}",
@@ -246,7 +252,7 @@ if not metas_editaveis.empty:
 
         if novo_status == "CONCLUÍDA":
             ano_escolhido = c4.selectbox(
-                "",
+                "Ano",
                 anos_opcoes,
                 key=f"ano_{row['ID']}",
                 label_visibility="collapsed"
@@ -272,6 +278,6 @@ if not metas_concluidas.empty:
 
     st.dataframe(
         metas_concluidas.drop(columns=["ID"]),
-        use_container_width=True,
+        width="stretch",
         hide_index=True
     )
