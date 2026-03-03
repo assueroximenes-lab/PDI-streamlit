@@ -1,5 +1,5 @@
 import streamlit as st
-import psycopg
+import psycopg2
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -11,6 +11,7 @@ from datetime import datetime
 from streamlit_oauth import OAuth2Component
 import jwt
 from sqlalchemy import create_engine, text
+import os
 
 
 alt.data_transformers.disable_max_rows()
@@ -124,10 +125,7 @@ if st.sidebar.button("Sair"):
 # CONEXÃO
 # --------------------------
 
-import os
-import streamlit as st
-import pandas as pd
-from sqlalchemy import create_engine
+
 
 
 @st.cache_resource
