@@ -224,8 +224,69 @@ def gerar_excel(df):
     return output.getvalue()
 
 # --------------------------
-# GERAR WORD (ACRESCENTADO)
+# GERAR WORD (ACRESCENTADO) com txto automatico
 # --------------------------
+def gerar_texto_relatorio(df):
+
+    total = len(df)
+
+    resumo = (
+        df.groupby("execucao")
+        .size()
+        .reset_index(name="Quantidade")
+        .sort_values("Quantidade", ascending=False)
+    )
+
+    resumo["Percentual"] = (resumo["Quantidade"] / total * 100).round(1)
+
+    ranking = (
+        df.groupby("Resp_1")
+        .size()
+        .reset_index(name="Quantidade")
+        .sort_values("Quantidade", ascending=False)
+    )
+
+    top_resps = ranking.head(5)
+
+    if "Eixo" in df.columns:
+        eixo = (
+            df.groupby("Eixo")
+            .size()
+            .reset_index(name="Total")
+            .sort_values("Total", ascending=False)
+        )
+    else:
+        eixo = None
+
+    maior = resumo.iloc[0]["execucao"]
+    segundo = resumo.iloc[1]["execucao"]
+
+    texto = f"""
+1. Análise Geral da Execução das Metas
+
+A análise do painel gerencial indica um total de {total} metas institucionais registradas no sistema de acompanhamento.
+
+Observa-se que a maior parte das metas encontra-se nas fases “{maior}” e “{segundo}”, indicando que as ações previstas no planejamento estratégico encontram-se em processo de execução.
+
+De modo geral, o cenário evidencia um nível moderado de execução das metas.
+
+3. Execução por Responsável
+"""
+
+    for _, row in top_resps.iterrows():
+        texto += f"\n{row['Resp_1']} – {row['Quantidade']} metas"
+
+    if eixo is not None:
+
+        texto += "\n\n4. Execução das Metas por Eixo Estratégico\n"
+
+        for _, row in eixo.iterrows():
+            texto += f"\n{row['Eixo']} – {row['Total']} metas"
+
+    return texto
+
+
+
 
 def gerar_relatorio_word(df):
 
@@ -247,9 +308,23 @@ def gerar_relatorio_word(df):
 
     document.add_page_break()
 
-    # -------------------
-    # RESUMO GERAL
-    # -------------------
+    # TEXTO ANALÍTICO AUTOMÁTICO
+    document.add_heading("Análise Gerencial das Metas", level=1)
+
+    #texto = gerar_texto_relatorio(df)
+
+    # garante que sempre apareça
+    #if texto:
+    #    for linha in texto.split("\n"):
+    #        document.add_paragraph(linha)
+    #else:
+    #    document.add_paragraph("Análise automática não disponível.")
+
+    document.add_paragraph("TESTE TEXTO AUTOMÁTICO")
+
+     # --------------------------------------------------------------------------
+     # RESUMO GERAL
+     # ---------------------------------------------------------------------------
 
     document.add_heading("1. Resumo Geral", level=1)
 
@@ -383,9 +458,9 @@ def gerar_relatorio_word(df):
     return buffer.getvalue()
 
 
-# --------------------------
+# --------------------------------------------------------------------------
 # CARREGAR DADOS
-# --------------------------
+# --------------------------------------------------------------------------
 atualizar_execucao2()
 df_original = carregar_dados()
 

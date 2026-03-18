@@ -4,14 +4,18 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import altair as alt
-from io import BytesIO
 from docx import Document
-from docx.shared import Inches
-from datetime import datetime
 from streamlit_oauth import OAuth2Component
 import jwt
 from sqlalchemy import create_engine, text
+from docx.shared import Inches, Pt
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement, parse_xml
+from docx.oxml.ns import qn, nsdecls
+from datetime import datetime
+from io import BytesIO
 import os
+#from openai import OpenAI
 
 
 alt.data_transformers.disable_max_rows()
@@ -28,29 +32,9 @@ tbody tr td { font-size: 11px !important; }
 </style>
 """, unsafe_allow_html=True)
 
-
-# ----------------------------
-# CONFIG OAUTH GOOGLE
-# ----------------------------
-
-#CLIENT_ID = st.secrets["GOOGLE_CLIENT_ID"]
-#CLIENT_SECRET = st.secrets["GOOGLE_CLIENT_SECRET"]
-#REDIRECT_URI = "https://SEUAPP.streamlit.app"  # coloque seu domínio aqui
-
-#oauth2 = OAuth2Component(
-#    CLIENT_ID,
-#    CLIENT_SECRET,
-#    "https://accounts.google.com/o/oauth2/auth",
-#    "https://oauth2.googleapis.com/token",
-#)
-
-
-
 # =====================================================
 # CONFIG OAUTH GOOGLE
 # =====================================================
-
-
 
 CLIENT_ID = st.secrets["GOOGLE_CLIENT_ID"]
 CLIENT_SECRET = st.secrets["GOOGLE_CLIENT_SECRET"]
@@ -124,9 +108,6 @@ if st.sidebar.button("Sair"):
 # --------------------------
 # CONEXÃO
 # --------------------------
-
-
-
 
 @st.cache_resource
 def get_engine():
@@ -241,162 +222,309 @@ def gerar_excel(df):
 # --------------------------
 # GERAR WORD (ACRESCENTADO)
 # --------------------------
+def gerar_relatorio_word(
+    df,
+    responsavel_sel="Todos",
+    eixo_sel="Todos",
+    situacao_sel="Todos",
+    obj_est_sel="Todos",
+    obj_esp_sel="Todos"
+):
 
-def gerar_relatorio_word(df):
 
-    from docx.enum.text import WD_ALIGN_PARAGRAPH
-    from datetime import datetime
+    # ==========================
+    # FUNÇÕES AUXILIARES
+    # ==========================
+    def add_page_number(document):
+        section = document.sections[0]
+        footer = section.footer
+        paragraph = footer.paragraphs[0]
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        run = paragraph.add_run()
+        run.text = "Página "
+
+        fldChar1 = OxmlElement('w:fldChar')
+        fldChar1.set(qn('w:fldCharType'), 'begin')
+
+        instrText = OxmlElement('w:instrText')
+        instrText.text = "PAGE"
+
+        fldChar2 = OxmlElement('w:fldChar')
+        fldChar2.set(qn('w:fldCharType'), 'end')
+
+        run._r.append(fldChar1)
+        run._r.append(instrText)
+        run._r.append(fldChar2)
+
+    def set_cell_color(cell, color):
+        shading = parse_xml(r'<w:shd {} w:fill="{}"/>'.format(nsdecls('w'), color))
+        cell._tc.get_or_add_tcPr().append(shading)
+
+    def formatar_tabela(tabela, destacar_percentual=False):
+        for cell in tabela.rows[0].cells:
+            set_cell_color(cell, "D9D9D9")
+            for p in cell.paragraphs:
+                for run in p.runs:
+                    run.bold = True
+                    run.font.size = Pt(11)
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        for i, row in enumerate(tabela.rows[1:]):
+            for j, cell in enumerate(row.cells):
+
+                if i % 2 == 0:
+                    set_cell_color(cell, "F2F2F2")
+
+                for p in cell.paragraphs:
+                    for run in p.runs:
+                        run.font.size = Pt(10)
+
+                    p.alignment = WD_ALIGN_PARAGRAPH.LEFT if j == 0 else WD_ALIGN_PARAGRAPH.CENTER
+
+                if destacar_percentual and j >= len(row.cells) - 2:
+                    try:
+                        valor = float(cell.text.replace(",", "."))
+                        if valor >= 70:
+                            set_cell_color(cell, "C6EFCE")
+                        elif valor < 40:
+                            set_cell_color(cell, "FFC7CE")
+                    except:
+                        pass
+
+    # ==========================
+    # PREPARAÇÃO
+    # ==========================
+    df_rel = df.copy()
+
+    if "Resp_1" in df_rel.columns:
+        df_rel["Resp_1"] = df_rel["Resp_1"].astype(str).str.strip()
 
     document = Document()
+    add_page_number(document)
 
-    # -------------------
-    # CAPA
-    # -------------------
+    # ==========================
+    # RESPONSÁVEL AUTOMÁTICO
+    # ==========================
+    if "Resp_1" in df_rel.columns and not df_rel.empty:
+        r = df_rel["Resp_1"].dropna().unique()
+        responsavel_final = r[0] if len(r) == 1 else "Geral"
+    else:
+        responsavel_final = "Geral"
 
-    document.add_heading("RELATÓRIO GERENCIAL DE METAS", level=0)
+    # ==========================
+    # CAPA INSTITUCIONAL
+    # ==========================
+    try:
+        document.add_picture("logo_ufape.png", width=Inches(2))
+        document.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+    except:
+        pass
 
     p = document.add_paragraph()
-    p.add_run("Sistema de Acompanhamento de Metas\n").bold = True
-    p.add_run(f"Data de geração: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+    p.add_run("\nUNIVERSIDADE FEDERAL DO AGRESTE DE PERNAMBUCO\n").bold = True
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    p = document.add_paragraph()
+    p.add_run("RELATÓRIO GERENCIAL DO PDI\n").bold = True
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    p = document.add_paragraph()
+    p.add_run(f"Responsável: {responsavel_final}\n")
+    p.add_run(f"Data e hora: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
     document.add_page_break()
 
-    # -------------------
-    # RESUMO GERAL
-    # -------------------
+    # ==========================
+    # ESCOPO
+    # ==========================
+    document.add_heading("Escopo do Relatório", 1)
 
-    document.add_heading("1. Resumo Geral", level=1)
+    filtros = {
+        "Responsável": responsavel_final,
+        "Situação": situacao_sel if situacao_sel != "Todos" else "Todas",
+        "Eixo": eixo_sel if eixo_sel != "Todos" else "Todos",
+        "Objetivo Estratégico": obj_est_sel if obj_est_sel != "Todos" else "Todos",
+        "Objetivo Específico": obj_esp_sel if obj_esp_sel != "Todos" else "Todos",
+    }
 
-    resumo = (
-        df.groupby("execucao")
-        .size()
-        .reset_index(name="Quantidade")
-        .sort_values("Quantidade", ascending=False)
-    )
+    for k, v in filtros.items():
+        p = document.add_paragraph()
+        p.add_run(f"{k}: ").bold = True
+        p.add_run(str(v))
 
+    # ==========================
+    # 1. RESUMO GERAL
+    # ==========================
+    document.add_heading("1. Resumo Geral", 1)
+
+    resumo = df_rel.groupby("execucao").size().reset_index(name="Quantidade")
     total = resumo["Quantidade"].sum()
-    resumo["Percentual (%)"] = (resumo["Quantidade"] / total * 100).round(1)
+    resumo["Percentual (%)"] = (resumo["Quantidade"] / total * 100).round(1) if total else 0
 
     tabela = document.add_table(rows=1, cols=3)
+    tabela.style = "Table Grid"
+
     cab = tabela.rows[0].cells
     cab[0].text = "Situação"
     cab[1].text = "Quantidade"
     cab[2].text = "Percentual (%)"
 
     for _, row in resumo.iterrows():
-        linha = tabela.add_row().cells
-        linha[0].text = str(row["execucao"])
-        linha[1].text = str(row["Quantidade"])
-        linha[2].text = str(row["Percentual (%)"])
+        l = tabela.add_row().cells
+        l[0].text = str(row["execucao"])
+        l[1].text = str(row["Quantidade"])
+        l[2].text = str(row["Percentual (%)"])
 
-    # gráfico geral
-    fig, ax = plt.subplots()
-    ax.bar(resumo["execucao"], resumo["Quantidade"])
-    ax.set_title("Situação Geral das Metas")
-    plt.xticks(rotation=45)
+    formatar_tabela(tabela, True)
 
-    img_stream = BytesIO()
-    plt.tight_layout()
-    plt.savefig(img_stream, format="png")
-    plt.close(fig)
-
-    document.add_picture(img_stream, width=Inches(5))
-
-    # -------------------
-    # PERCENTUAL POR EIXO
-    # -------------------
-
-    if "Eixo" in df.columns:
+    # ==========================
+    # 2. EXECUÇÃO POR EIXO (COMPLETO)
+    # ==========================
+    if "Eixo" in df_rel.columns:
 
         document.add_page_break()
-        document.add_heading("2. Execução por Eixo", level=1)
+        document.add_heading("2. Execução por Eixo", 1)
+
+        # criar status binário (igual aos outros itens)
+        df_rel["status"] = df_rel["execucao"].apply(
+            lambda x: "Concluída" if "conclu" in str(x).lower() else "Não Concluída"
+        )
 
         resumo_eixo = (
-            df.groupby(["Eixo", "execucao"])
+            df_rel.groupby(["Eixo", "status"])
             .size()
-            .reset_index(name="Quantidade")
+            .unstack(fill_value=0)
+            .reset_index()
         )
 
-        tabela_eixo_total = (
-            df.groupby("Eixo")
-            .size()
-            .reset_index(name="Total")
-        )
+        # garantir colunas
+        if "Concluída" not in resumo_eixo.columns:
+            resumo_eixo["Concluída"] = 0
+        if "Não Concluída" not in resumo_eixo.columns:
+            resumo_eixo["Não Concluída"] = 0
 
-        # gráfico comparativo por eixo
-        fig, ax = plt.subplots()
+        # totais
+        resumo_eixo["Total"] = resumo_eixo["Concluída"] + resumo_eixo["Não Concluída"]
 
-        eixo_counts = df["Eixo"].value_counts()
-        ax.bar(eixo_counts.index, eixo_counts.values)
-        ax.set_title("Quantidade de Metas por Eixo")
-        plt.xticks(rotation=45)
+        # percentuais
+        resumo_eixo["% Concluída"] = (
+                resumo_eixo["Concluída"] / resumo_eixo["Total"] * 100
+        ).round(1)
 
-        img_stream = BytesIO()
-        plt.tight_layout()
-        plt.savefig(img_stream, format="png")
-        plt.close(fig)
+        resumo_eixo["% Não Concluída"] = (
+                resumo_eixo["Não Concluída"] / resumo_eixo["Total"] * 100
+        ).round(1)
 
-        document.add_picture(img_stream, width=Inches(5))
+        # ordenar
+        resumo_eixo = resumo_eixo.sort_values("Total", ascending=False)
 
-        # tabela de totais
-        tabela = document.add_table(rows=1, cols=2)
+        # tabela
+        tabela = document.add_table(rows=1, cols=6)
+        tabela.style = "Table Grid"
+
         cab = tabela.rows[0].cells
         cab[0].text = "Eixo"
-        cab[1].text = "Total de Metas"
+        cab[1].text = "Total"
+        cab[2].text = "Concluídas"
+        cab[3].text = "Não Concluídas"
+        cab[4].text = "% Concluída"
+        cab[5].text = "% Não Concluída"
 
-        for _, row in tabela_eixo_total.iterrows():
-            linha = tabela.add_row().cells
-            linha[0].text = str(row["Eixo"])
-            linha[1].text = str(row["Total"])
+        for _, row in resumo_eixo.iterrows():
+            l = tabela.add_row().cells
+            l[0].text = str(row["Eixo"])
+            l[1].text = str(row["Total"])
+            l[2].text = str(row["Concluída"])
+            l[3].text = str(row["Não Concluída"])
+            l[4].text = str(row["% Concluída"])
+            l[5].text = str(row["% Não Concluída"])
 
-    # -------------------
-    # RANKING RESPONSÁVEIS
-    # -------------------
+        formatar_tabela(tabela, True)
 
-    if "Resp_1" in df.columns:
+    # ==========================
+    # 3. RESPONSÁVEIS
+    # ==========================
+    if "Resp_1" in df_rel.columns:
 
         document.add_page_break()
-        document.add_heading("3. Ranking de Responsáveis", level=1)
+        document.add_heading("3. Ranking de Responsáveis", 1)
 
-        ranking = (
-            df.groupby("Resp_1")
-            .size()
-            .reset_index(name="Quantidade")
-            .sort_values("Quantidade", ascending=False)
+        df_rel["status"] = df_rel["execucao"].apply(
+            lambda x: "Concluída" if "conclu" in str(x).lower() else "Não Concluída"
         )
 
-        tabela = document.add_table(rows=1, cols=2)
+        r = df_rel.groupby(["Resp_1", "status"]).size().unstack(fill_value=0).reset_index()
+
+        r["Total"] = r.sum(axis=1, numeric_only=True)
+        r["% Concluída"] = (r.get("Concluída", 0) / r["Total"] * 100).round(1)
+        r["% Não Concluída"] = (r.get("Não Concluída", 0) / r["Total"] * 100).round(1)
+
+        tabela = document.add_table(rows=1, cols=6)
+        tabela.style = "Table Grid"
+
         cab = tabela.rows[0].cells
         cab[0].text = "Responsável"
-        cab[1].text = "Total de Metas"
+        cab[1].text = "Total"
+        cab[2].text = "Concluídas"
+        cab[3].text = "Não Concluídas"
+        cab[4].text = "% Concluída"
+        cab[5].text = "% Não Concluída"
 
-        for _, row in ranking.iterrows():
-            linha = tabela.add_row().cells
-            linha[0].text = str(row["Resp_1"])
-            linha[1].text = str(row["Quantidade"])
+        for _, row in r.iterrows():
+            l = tabela.add_row().cells
+            l[0].text = str(row["Resp_1"])
+            l[1].text = str(row["Total"])
+            l[2].text = str(row.get("Concluída", 0))
+            l[3].text = str(row.get("Não Concluída", 0))
+            l[4].text = str(row["% Concluída"])
+            l[5].text = str(row["% Não Concluída"])
 
-        # gráfico ranking
-        fig, ax = plt.subplots()
-        ax.bar(ranking["Resp_1"], ranking["Quantidade"])
-        ax.set_title("Ranking de Responsáveis")
-        plt.xticks(rotation=45)
+        formatar_tabela(tabela, True)
 
-        img_stream = BytesIO()
-        plt.tight_layout()
-        plt.savefig(img_stream, format="png")
-        plt.close(fig)
+    # ==========================
+    # 4. OBJETIVO ESTRATÉGICO
+    # ==========================
+    if "Objetivo Estratégico" in df_rel.columns:
 
-        document.add_picture(img_stream, width=Inches(5))
+        document.add_page_break()
+        document.add_heading("4. Análise por Objetivo Estratégico", 1)
 
-    # -------------------
-    # FINALIZA
-    # -------------------
+        o = df_rel.groupby(["Objetivo Estratégico", "status"]).size().unstack(fill_value=0).reset_index()
 
+        o["Total"] = o.sum(axis=1, numeric_only=True)
+        o["% Concluída"] = (o.get("Concluída", 0) / o["Total"] * 100).round(1)
+        o["% Não Concluída"] = (o.get("Não Concluída", 0) / o["Total"] * 100).round(1)
+
+        tabela = document.add_table(rows=1, cols=6)
+        tabela.style = "Table Grid"
+
+        cab = tabela.rows[0].cells
+        cab[0].text = "Objetivo Estratégico"
+        cab[1].text = "Total"
+        cab[2].text = "Concluídas"
+        cab[3].text = "Não Concluídas"
+        cab[4].text = "% Concluída"
+        cab[5].text = "% Não Concluída"
+
+        for _, row in o.iterrows():
+            l = tabela.add_row().cells
+            l[0].text = str(row["Objetivo Estratégico"])
+            l[1].text = str(row["Total"])
+            l[2].text = str(row.get("Concluída", 0))
+            l[3].text = str(row.get("Não Concluída", 0))
+            l[4].text = str(row["% Concluída"])
+            l[5].text = str(row["% Não Concluída"])
+
+        formatar_tabela(tabela, True)
+
+    # ==========================
+    # FINAL (OBRIGATÓRIO)
+    # ==========================
     buffer = BytesIO()
     document.save(buffer)
     return buffer.getvalue()
-
 
 # --------------------------
 # CARREGAR DADOS
@@ -548,8 +676,8 @@ st.sidebar.download_button(
 # BOTÃO WORD (ACRESCENTADO)
 # --------------------------
 
-word_bytes = gerar_relatorio_word(df_original)
-
+#word_bytes = gerar_relatorio_word(df_original)
+word_bytes = gerar_relatorio_word(df)
 st.sidebar.download_button(
     label="Baixar relatório em Word",
     data=word_bytes,
@@ -570,11 +698,10 @@ st.metric("Total de Metas", total_metas)
 
 st.divider()
 
+
 # --------------------------
 # SITUAÇÃO DAS METAS
 # --------------------------
-
-st.subheader("Situação Geral das Metas")
 
 dados = []
 for s in situacoes_padrao:
@@ -587,7 +714,37 @@ tabela_situacao = pd.DataFrame(
     columns=["Situação", "Quantidade", "Percentual (%)"]
 )
 
-cols = st.columns(5)
+# --------------------------
+# KPIs EM CIMA (HORIZONTAL)
+# --------------------------
+
+st.markdown("""
+<style>
+
+/* NÚMERO GRANDE (Quantidade) */
+div[data-testid="stMetricValue"] {
+    font-size: 48px !important;   /* 👈 3x maior */
+    font-weight: 800;
+}
+
+/* PERCENTUAL (delta) */
+div[data-testid="stMetricDelta"] {
+    font-size: 22px !important;   /* 👈 maior e legível */
+    font-weight: 600;
+}
+
+/* TÍTULO DO KPI (Situação) */
+div[data-testid="stMetricLabel"] {
+    font-size: 16px;
+    font-weight: 600;
+}
+
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("### 📊 Situação das Metas")
+
+cols = st.columns(len(tabela_situacao))
 
 for i, row in tabela_situacao.iterrows():
     cols[i].metric(
@@ -597,6 +754,35 @@ for i, row in tabela_situacao.iterrows():
     )
 
 st.divider()
+
+# --------------------------
+# GRÁFICO GRANDE EMBAIXO (ALTair)
+# --------------------------
+
+df_pizza = tabela_situacao[tabela_situacao["Quantidade"] > 0]
+
+chart = alt.Chart(df_pizza).mark_arc(innerRadius=90).encode(
+    theta=alt.Theta(field="Quantidade", type="quantitative"),
+    color=alt.Color(
+        field="Situação",
+        type="nominal",
+        legend=alt.Legend(title="Situação", orient="right")
+    ),
+    tooltip=["Situação", "Quantidade", "Percentual (%)"]
+).properties(
+    width=600,   # 👈 4x maior (antes ~150)
+    height=400,
+    title="Distribuição das Metas"
+)
+
+# centralizar
+col1, col2, col3 = st.columns([1,2,1])
+with col2:
+    st.altair_chart(chart, width="stretch")
+
+st.divider()
+
+
 
 # --------------------------
 # GRÁFICO SITUAÇÃO
